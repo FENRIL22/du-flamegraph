@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/urfave/cli"
 )
@@ -41,6 +42,10 @@ func main() {
 			Usage: "distination path of grenerated flamegraph. default is ./du-flamegraph.svg",
 		},
 		cli.BoolFlag{
+			Name:  "logical-size",
+			Usage: "count size as logical size",
+		},
+		cli.BoolFlag{
 			Name:  "verbose",
 			Usage: "show verbose log",
 		},
@@ -57,6 +62,7 @@ var (
 
 func generate(c *cli.Context) error {
 	verbose = c.Bool("verbose")
+	isLogicalSize := c.Bool("logical-size")
 	trace("Args : %+v", os.Args)
 
 	bases = basePaths(c)
@@ -64,7 +70,7 @@ func generate(c *cli.Context) error {
 	m := map[string]float64{}
 
 	for _, path := range bases {
-		traverse(path, m)
+		traverse(path, m, isLogicalSize)
 	}
 
 	trace("m : %+v", m)
@@ -81,9 +87,13 @@ func trace(format string, v ...interface{}) {
 	log.Printf(format+"\n", v...)
 }
 
-func traverse(node string, m map[string]float64) {
+func traverse(node string, m map[string]float64, isLogicalSize bool) {
 	filepath.Walk(node, func(path string, info os.FileInfo, err error) error {
-		trace("%s : %d : dir %v", path, info.Size(), info.IsDir())
+		realSize := info.Size()
+		if !isLogicalSize {
+			realSize = getRealSize(info)
+		}
+		trace("%s : %d : dir %v", path, realSize, info.IsDir())
 
 		abspath, err := filepath.Abs(path)
 		if err != nil {
@@ -101,10 +111,30 @@ func traverse(node string, m map[string]float64) {
 		}
 
 		dir := filepath.Dir(abspath)
-		m[dir] += float64(info.Size())
+		m[dir] += float64(realSize)
 
 		return nil
 	})
+}
+
+func getRealSize(info os.FileInfo) int64 {
+	if info.IsDir() {
+		// Dirの時はnilになるのでFileInfo側を参照する
+		return info.Size()
+	}
+
+	stat := info.Sys().(*syscall.Stat_t)
+
+	// ブロック数を取得
+	blocks := stat.Blocks
+
+	// 一般的なディスクのブロックサイズは512バイトなのでそうであるとみなす
+	blockSize := int64(512)
+
+	// ブロックサイズとブロック数を利用して実容量を計算する
+	actualSize := blocks * blockSize
+
+	return actualSize
 }
 
 func basePaths(c *cli.Context) []string {
